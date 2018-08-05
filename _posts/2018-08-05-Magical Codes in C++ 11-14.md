@@ -4,14 +4,19 @@ date: 2018-08-05
 categories:
 - C++
 tags:
-- C++ 11
-- C++ 14
+- C++
+- C++ 11/14
+---
+
+本文通过阅读gcc源码，分析C++ 11/14中一些神奇的操作是如何实现的
+
 ---
 
 
-## 1. std::move
+
+# std::move
 [std::move](https://en.cppreference.com/w/cpp/utility/move "std::move")用于显式的触发对象间的“移动”
-例如，可以把s“移动”进入vector，减少一次内存拷贝（如果s不再需要了）
+例如在以下代码中，可以把s“移动”进入vector，减少一次内存拷贝（如果s不再需要了）
 
 ```cpp
 std::string s("Hello, world !!!!!");
@@ -19,9 +24,9 @@ std::vector<std::string> vss;
 vss.push_back( std::move(s) );
 ```
 
-那std::move是如何做到让对象“移动”的？其实答案很简单：强制类型转换。强制类型转换为右值，然后调用接收对象的“移动构造函数”或“移动赋值函数”
+std::move是如何做到让对象“移动”的？答案很简单：强制类型转换。强制类型转换为右值，然后调用接收对象的“移动构造函数”或“移动赋值函数”
 
-典型的std::move实现（详见[bits/move.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00413_source.html)，91行）：
+std::move实现（详见[bits/move.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00413_source.html)，91行）：
 ```cpp
 template<typename T>
 constexpr typename std::remove_reference<T>::type&& move(T&& t) noexcept
@@ -34,16 +39,18 @@ std::string str1("Hello, world !!!!!");
 std::string str2 = std::move(str1);
 ```
 第二句str2的赋值，相当于` std::string str2 = static_cast<std::string &&>(str1);  `
-然后 str2的移动赋值operator=(string &&) 就会将str1的内容“移动”到str2
+然后函数重载，匹配 str2的移动赋值`operator=(string &&)` ，然后`operator=(string &&)`将str1的内容“移动”到str2
 
 回过头看std::move的实现
 入参 T&& 叫做“universal reference”，可以同时接受左值引用和右值引用
 `std::remove_reference<T>::type`用于去掉T的引用，来确保 `std::remove_reference<T>::type&&` 一定是右值引用。关于std::remove_reference，请继续看第2节
-那这里为何不直接返回`T&&`？原因刚才其实讲了，在这里`T&&`其实是“universal reference”，而不是右值引用。具体请参考《Effective Modern C++》Item 24。
+那这里为何不直接返回`T&&`？原因刚才也讲了，在这里`T&&`其实是“universal reference”，而不是右值引用。具体请参考《Effective Modern C++》Item 24。
+
+---
 
 
 
-## 2. std::remove_reference
+# std::remove_reference
 如上边std::move实现中展示的例子，std::remove_reference用于得到去掉引用后的类型。这种操作在一般的业务逻辑开发中应该很少遇到吧，除非是写类/模板库
 
 std::move_reference利用C++模板的类型推导实现，典型的[实现](https://en.cppreference.com/w/cpp/types/remove_reference "实现")：
@@ -55,16 +62,18 @@ template< class T > struct remove_reference<T&&> {typedef T type;};
 
 类似的，还有`std::remove_const`这样的东西，详见[这里](https://en.cppreference.com/w/cpp/types/remove_cv "这里")。
 
+---
 
 
-## 3. emplace / emplace_back
+
+# emplace / emplace_back
 从C++ 11开始，很多容器都增加了emplace / emplace_back等操作。相比insert、push_back，特定场景下性能有提升。《Effective Modern C++》Item 24对比了push_back与emplace_back的性能差别，并给出了性能提升的三个条件：
 1. the value being added is constructed into the container, not assigned;
 2. the argument type(s) passed differ from the type held by the container;
 3. the container won’t reject the value being added due to it being a duplicate.
 
-以`std::vector<std::string> vss;`为例。`vss.push_back("Hello, world!");`相当于`vss.push_back(std::string("Hello, world!"));`，需要构造和析构临时std::string变量。而emplace_back直接在std::vector内部进行元素构造，因此节省了这部分开销
-具体push_back和emplace_back的实现（参考gcc 7.3.0，适当做了精简）：
+以`std::vector<std::string> vss;`为例。`vss.push_back("Hello, world!");`相当于`vss.push_back(std::string("Hello, world!"));`，需要构造和析构临时std::string变量。而emplace_back直接在std::vector内部进行元素构造，因此节省了这部分开销。这也是`emplace`这个单词的含义吧。
+具体push_back和emplace_back的实现：
 * push_back（完整源码见[stl_vector.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00590_source.html) ，939行）
 ```cpp
 void push_back(const value_type& __x)
@@ -107,15 +116,16 @@ template<typename _Up, typename... _Args>
 void construct(_Up* __p, _Args&&... __args)
 { ::new((void *)__p) _Up(std::forward<_Args>(__args)...); }
 ```
-所以，emplace系列方法还得益C++ 11的新特性[template parameter pack](https://en.cppreference.com/w/cpp/language/parameter_pack)（也有文档叫variadic parameter），来满足不同的构造函数。
+所以，emplace系列方法还得益C++ 11的新特性[template parameter pack](https://en.cppreference.com/w/cpp/language/parameter_pack)（也有文档叫variadic parameter），来适应不同的构造函数。
+
+---
 
 
 
 
-## 4. std::shared_ptr
+# std::shared_ptr
 `std::shared_ptr`是可共享的智能指针，通过引用计数实现。详见[这里](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a15774_source.html)，86行。
 
-#### shared_ptr
 ```cpp
   template<typename _Tp>
     class shared_ptr : public __shared_ptr<_Tp>
@@ -133,7 +143,7 @@ void construct(_Up* __p, _Args&&... __args)
     };
 ```
 
-实际的实现代码都在`__shared_ptr`中。
+可以看出，实际的实现代码都在`__shared_ptr`中，`shared_ptr`只是一层皮。详见 [shared_ptr_base.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00497_source.html)，1033行。
 #### __shared_ptr
 ```cpp
   template<typename _Tp, _Lock_policy _Lp = __default_lock_policy>
@@ -173,7 +183,7 @@ void construct(_Up* __p, _Args&&... __args)
     };
 ```
 
-可以看到，引用计数的秘密都在`__shared_count`
+可以看到，引用计数的秘密都在`__shared_count`，详见[shared_ptr_base.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00497_source.html)，571行。
 #### __shared_count
 ```cpp
   template<_Lock_policy _Lp = __default_lock_policy>
@@ -218,8 +228,13 @@ void construct(_Up* __p, _Args&&... __args)
       }
       
       ...
+      
+    private:
+      ...
+      _Sp_counted_base<_Lp>*  _M_pi;
     };
 ```
+`__shared_count`的核心是 `_M_pi` 成员变量，类型是 `_Sp_counted_ptr`。详见 [shared_ptr_base.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00497_source.html)，366行。
 
 #### _Sp_counted_ptr & _Sp_counted_base
 ```cpp
@@ -274,12 +289,16 @@ void construct(_Up* __p, _Args&&... __args)
     }
 ```
 
+_`std::shared_ptr`的实现看起来有点过于复杂，经过了多层继承/组合。如此实现的原因目前从代码中看不出来，后续找相关文档研究研究）_
+
+---
 
 
-## 5. std::begin & std::end
 
-`std::begin`与`std::end`只是一个简单的工具，使__原生数组__和STL容器（包括支持begin和end方法的其他容器），可以使用相同的方式进行迭代
-实现上比较简单，对于数组（完整源码见[range_access.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00449_source.html) 85行和95行）
+# std::begin & std::end
+
+`std::begin`与`std::end`只是一个简单的工具，使__原生数组__（即`int a[10]`这类东西）和STL容器（包括支持begin和end方法的其他容器），可以使用相同的方式进行遍历，更“泛型”。
+实现上比较简单，对于原生数组（完整源码见[range_access.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00449_source.html) 85行和95行）：
 ```cpp
 template<typename _Tp, size_t _Nm>
   inline constexpr _Tp* begin(_Tp (&__arr)[_Nm])
@@ -289,24 +308,27 @@ template<typename _Tp, size_t _Nm>
   inline constexpr _Tp* end(_Tp (&__arr)[_Nm])
   { return __arr + _Nm; }
 ```
-注意入参模板是`_Tp (&__arr)[_Nm]`，需要传入在编译期已知大小的数组。这点其实也好理解，不知道大小的数组是无法实现end方法的
+注意入参模板是`_Tp (&__arr)[_Nm]`，需要传入在编译期已知大小的数组。这点其实也好理解，不知道大小的数组是无法实现end方法的。
 
-对于容器，直接调用容器的begin和end（完整源码见[range_access.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00449_source.html) 46行和56行）
+对于容器，直接调用容器的begin和end（完整源码见[range_access.h](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00449_source.html) 46行和66行）
 ```cpp
 template<typename _Container>
   inline constexpr auto
   begin(_Container& __cont) -> decltype(__cont.begin())
   { return __cont.begin(); }
-
+```
+```cpp
 template<typename _Container>
   inline constexpr auto
-  begin(const _Container& __cont) -> decltype(__cont.begin())
-  { return __cont.begin(); }
+  end(_Container& __cont) -> decltype(__cont.end())
+  { return __cont.end(); }
 ```
 
+---
 
 
-## 6. std::array
+
+# std::array
 
 [std::array](https://en.cppreference.com/w/cpp/container/array)可以替代传统的C-style数组，提供更好的封装以及更便捷的方法(例如，两个std::array对象可以直接进行==、<、>等逻辑比较)
 实现上，std::array对象在内部持有一个C-style数组，再进行二次封装。详见[array](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00041_source.html)。
@@ -372,13 +394,15 @@ template<typename _Container>
     { return std::equal(__one.begin(), __one.end(), __two.begin()); }
 ```
 
+---
 
 
-## 7. std::future & std::promise
+
+# std::future & std::promise
 
 Future/Promise是一种异步编程模型，参见[Futures_and_promises](https://en.wikipedia.org/wiki/Futures_and_promises)。
 
-### a. std::async
+### std::async
 
 Future的实现，先以std::async的使用场景为例：
 
@@ -403,7 +427,7 @@ Future的实现，先以std::async的使用场景为例：
   }
 ```
 
-#### std::async的实现
+##### std::async的实现
 
 做了适当精简。完整代码详见[future](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00074_source.html)，1709行：
 
@@ -429,7 +453,7 @@ Future的实现，先以std::async的使用场景为例：
       return future<__async_result_of<_Fn, _Args...>>(__state);
     }
 ```
-#### std::future的实现
+##### std::future的实现
 
 std::future::get()的实现（做了适当精简。完整代码详见[future](https://gcc.gnu.org/onlinedocs/gcc-7.3.0/libstdc++/api/a00074_source.html)，791行）如下：
 
@@ -525,7 +549,7 @@ std::future::get()的实现（做了适当精简。完整代码详见[future](ht
     };
 ```
 
-#### 回头看std::async的实现
+##### 回头看std::async的实现
 
 ```__future_base::_S_make_deferred_state```与```__future_base::_S_make_async_state```分别生成```_Deferred_state```与```_Async_state_impl```对象：
 
@@ -610,7 +634,7 @@ std::future::get()的实现（做了适当精简。完整代码详见[future](ht
 
 
 
-### b. std::promise
+### std::promise
 
 以下列场景为例：
 
@@ -661,6 +685,6 @@ int main()
       ...
     };
 ```
-可以看到future与promise之间通过```std::shared_ptr<__future_base::_State_base>```来实现数据传递
+可以看到future与promise之间通过```std::shared_ptr<__future_base::_State_base>```来实现数据传递。
 
-
+---
